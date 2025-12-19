@@ -116,7 +116,7 @@ end
 -- ==========================
 local function encontrarMapa()
 	for _, v in ipairs(Workspace:GetChildren()) do
-		if v:FindFirstChild("Spawns") then
+		if v:FindFirstChild("Spawns") and v.Name ~= "Lobby" then
 			return v
 		end
 	end
