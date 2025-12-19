@@ -1,218 +1,96 @@
--- ==========================
+repeat task.wait() until game:IsLoaded()
+
+---------------------------------------------------
 -- SERVICES
--- ==========================
+---------------------------------------------------
 local Players = game:GetService("Players")
+local TweenService = game:GetService("TweenService")
+local VirtualUser = game:GetService("VirtualUser")
 local Workspace = game:GetService("Workspace")
-local RunService = game:GetService("RunService")
 
 local player = Players.LocalPlayer
 
--- ==========================
--- CONFIG
--- ==========================
-local CHECK_MAP_DELAY = 3
-local MOVE_SPEED = 22
-local REACH_DIST = 2
-local MAX_LINES = 300
+---------------------------------------------------
+-- STATES
+---------------------------------------------------
+local autoFarmEnabled = false
+local autoResetEnabled = false
+local antiAFKEnabled = false
 
--- ==========================
--- CHARACTER STATE
--- ==========================
-local character
-local humanoid
-local hrp
-local alive = false
+local farmSpeed = 20
+local activeTween
+local lastCoinTime = tick()
 
--- ==========================
--- CONSOLE
--- ==========================
-local function createConsole()
-	local gui = Instance.new("ScreenGui")
-	gui.Name = "ConsoleGui"
-	gui.ResetOnSpawn = false
-	gui.Parent = player:WaitForChild("PlayerGui")
+---------------------------------------------------
+-- CLEAN OLD GUI
+---------------------------------------------------
+pcall(function()
+    game.CoreGui:FindFirstChild("Rayfield"):Destroy()
+end)
 
-	local main = Instance.new("Frame")
-	main.Size = UDim2.fromScale(0.6, 0.45)
-	main.Position = UDim2.fromScale(0.2, 0.5)
-	main.BackgroundColor3 = Color3.fromRGB(15,15,15)
-	main.BorderSizePixel = 0
-	main.Parent = gui
+---------------------------------------------------
+-- LOAD RAYFIELD
+---------------------------------------------------
+local Rayfield = loadstring(game:HttpGet("https://sirius.menu/rayfield"))()
 
-	Instance.new("UICorner", main).CornerRadius = UDim.new(0,12)
+---------------------------------------------------
+-- WINDOW
+---------------------------------------------------
+local Window = Rayfield:CreateWindow({
+    Name = "❄️ Winter AutoFarm | Liam Script",
+    LoadingTitle = "Winter AutoFarm",
+    LoadingSubtitle = "made by Liam",
+    ConfigurationSaving = { Enabled = false },
+    Discord = {
+        Enabled = true,
+        Invite = "2vxSdFF375",
+        RememberJoins = true
+    },
+    KeySystem = false
+})
 
-	local title = Instance.new("TextLabel", main)
-	title.Size = UDim2.new(1, -16, 0, 28)
-	title.Position = UDim2.new(0, 8, 0, 8)
-	title.BackgroundTransparency = 1
-	title.Text = "Console"
-	title.Font = Enum.Font.Code
-	title.TextSize = 16
-	title.TextColor3 = Color3.new(1,1,1)
+---------------------------------------------------
+-- TABS
+---------------------------------------------------
+local MainTab = Window:CreateTab("Main")
+local AntiTab = Window:CreateTab("Anti")
 
-	local list = Instance.new("ScrollingFrame", main)
-	list.Size = UDim2.new(1, -16, 1, -48)
-	list.Position = UDim2.new(0, 8, 0, 40)
-	list.BackgroundColor3 = Color3.fromRGB(10,10,10)
-	list.BorderSizePixel = 0
-	list.ScrollBarImageTransparency = 0.2
-	Instance.new("UICorner", list).CornerRadius = UDim.new(0,8)
+---------------------------------------------------
+-- UI
+---------------------------------------------------
+MainTab:CreateToggle({
+    Name = "❄️ Auto Farm Coins",
+    CurrentValue = false,
+    Callback = function(v)
+        autoFarmEnabled = v
+    end
+})
 
-	local layout = Instance.new("UIListLayout", list)
-	layout.Padding = UDim.new(0,4)
+MainTab:CreateToggle({
+    Name = "📦 Auto Reset Bag",
+    CurrentValue = false,
+    Callback = function(v)
+        autoResetEnabled = v
+    end
+})
 
-	local lines = {}
+MainTab:CreateInput({
+    Name = "🌬️ Farm Speed (20–22)",
+    PlaceholderText = "20",
+    Callback = function(t)
+        local n = tonumber(t)
+        if n and n >= 15 and n <= 22 then
+            farmSpeed = n
+            Rayfield:Notify({
+                Title = "Speed Updated",
+                Content = "Speed set to "..n,
+                Duration = 2
+            })
+        end
+    end
+})
 
-	local function update()
-		task.wait()
-		list.CanvasSize = UDim2.fromOffset(0, layout.AbsoluteContentSize.Y + 8)
-		list.CanvasPosition = Vector2.new(0, math.max(0, list.CanvasSize.Y.Offset - list.AbsoluteWindowSize.Y))
-	end
-
-	return function(text)
-		local label = Instance.new("TextLabel")
-		label.Size = UDim2.new(1, -8, 0, 18)
-		label.AutomaticSize = Enum.AutomaticSize.Y
-		label.BackgroundTransparency = 1
-		label.TextWrapped = true
-		label.Font = Enum.Font.Code
-		label.TextSize = 14
-		label.TextColor3 = Color3.fromRGB(220,220,220)
-		label.Text = os.date("[%H:%M:%S] ") .. text
-		label.Parent = list
-
-		table.insert(lines, label)
-		if #lines > MAX_LINES then
-			table.remove(lines,1):Destroy()
-		end
-		update()
-	end
-end
-
-local log = createConsole()
-log("Console iniciado")
-
--- ==========================
--- CHARACTER HANDLING
--- ==========================
-local function onCharacter(char)
-	character = char
-	humanoid = char:WaitForChild("Humanoid")
-	hrp = char:WaitForChild("HumanoidRootPart")
-	alive = true
-
-	humanoid.Died:Once(function()
-		alive = false
-	end)
-end
-
-player.CharacterAdded:Connect(onCharacter)
-if player.Character then
-	onCharacter(player.Character)
-end
-
--- ==========================
--- MAP / COINS
--- ==========================
-local function encontrarMapa()
-	for _, v in ipairs(Workspace:GetChildren()) do
-		if v:FindFirstChild("Spawns") and v.Name ~= "Lobby" then
-			return v
-		end
-	end
-	return nil
-end
-
-local function getNearestCoin(map)
-	if not map:FindFirstChild("CoinContainer") then return nil end
-	if not hrp then return nil end
-
-	local nearest
-	local shortest = math.huge
-
-	for _, coin in ipairs(map.CoinContainer:GetChildren()) do
-		if coin:IsA("BasePart") then
-			local d = (coin.Position - hrp.Position).Magnitude
-			if d < shortest then
-				shortest = d
-				nearest = coin
-			end
-		end
-	end
-
-	return nearest
-end
-
--- ==========================
--- PERFECT LINEAR FLIGHT
--- ==========================
-local function flyConstantTo(targetPos)
-	if not alive or not humanoid or not hrp then return end
-	if humanoid.Health <= 0 then return end
-
-	humanoid:ChangeState(Enum.HumanoidStateType.Physics)
-
-	local startPos = hrp.Position
-	local distance = (targetPos - startPos).Magnitude
-	if distance < REACH_DIST then
-		hrp.CFrame = CFrame.new(targetPos)
-		return
-	end
-
-	local duration = distance / MOVE_SPEED
-	local startTime = os.clock()
-
-	local conn
-	conn = RunService.Heartbeat:Connect(function()
-		if not alive or humanoid.Health <= 0 or not hrp or not hrp.Parent then
-			conn:Disconnect()
-			return
-		end
-
-		local alpha = (os.clock() - startTime) / duration
-		if alpha >= 1 then
-			hrp.CFrame = CFrame.new(targetPos)
-			conn:Disconnect()
-			return
-		end
-
-		-- trava física (impede giro / queda)
-		hrp.AssemblyLinearVelocity = Vector3.zero
-		hrp.AssemblyAngularVelocity = Vector3.zero
-
-		local pos = startPos:Lerp(targetPos, alpha)
-		hrp.CFrame = CFrame.new(pos)
-	end)
-end
-
--- ==========================
--- MAIN LOOP
--- ==========================
-local map
-
-while true do
-	-- esperar mapa
-	while not map do
-		log("Aguardando mapa...")
-		task.wait(CHECK_MAP_DELAY)
-		map = encontrarMapa()
-	end
-
-	log("Mapa encontrado: "..map.Name)
-
-	-- farm
-	while map and map.Parent and alive do
-		local coin = getNearestCoin(map)
-		if not coin then
-			log("Sem moedas...")
-			task.wait(1)
-		else
-			log("Indo até moeda")
-			flyConstantTo(coin.Position)
-			task.wait(0.15)
-		end
-	end
-
-	log("Mapa sumiu ou player morreu")
-	map = nil
-end
+MainTab:CreateParagraph({
+    Title = "⚠️ WARNING",
+    Content = "DO NOT USE ALT ACCOUNT TO AVOID BAN\n\nUse MAIN account only."
+})
