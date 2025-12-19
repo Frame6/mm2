@@ -1,0 +1,241 @@
+--[[
+ CONSOLE + AUTO FARM DE MOEDAS (JOGO PRÓPRIO)
+ ------------------------------------------------
+ • Console GUI com scroll (prints internos)
+ • Máquina de estados:
+     - Aguarda mapa (checa a cada 3s)
+     - Farma moedas enquanto mapa existir
+ • SEMPRE escolhe a MOEDA MAIS PRÓXIMA
+ • Movimento "voando" atravessando paredes
+ • Velocidade configurável
+ • Para imediatamente se o mapa sumir
+
+ COLOQUE COMO: LocalScript
+ LOCAL: StarterPlayer > StarterPlayerScripts
+
+ OBS:
+ - Código feito para TREINO em jogo próprio
+ - Coins em: mapa.CoinContainer (BaseParts)
+]]
+
+-- ==========================
+-- SERVICES
+-- ==========================
+local Players = game:GetService("Players")
+local Workspace = game:GetService("Workspace")
+local RunService = game:GetService("RunService")
+
+local player = Players.LocalPlayer
+
+-- ==========================
+-- CONFIG
+-- ==========================
+local CHECK_MAP_DELAY = 3      -- intervalo para procurar mapa
+local MOVE_SPEED = 25          -- studs por segundo (voo lento)
+local COIN_REACH_DIST = 2      -- tolerância (NUNCA use 0)
+local MAX_LINES = 300
+
+-- ==========================
+-- CONSOLE GUI
+-- ==========================
+local function createConsole()
+	local gui = Instance.new("ScreenGui")
+	gui.Name = "ConsoleGui"
+	gui.ResetOnSpawn = false
+	gui.Parent = player:WaitForChild("PlayerGui")
+
+	local main = Instance.new("Frame")
+	main.Size = UDim2.fromScale(0.6, 0.45)
+	main.Position = UDim2.fromScale(0.2, 0.5)
+	main.BackgroundColor3 = Color3.fromRGB(15, 15, 15)
+	main.BorderSizePixel = 0
+	main.Parent = gui
+
+	local corner = Instance.new("UICorner")
+	corner.CornerRadius = UDim.new(0, 12)
+	corner.Parent = main
+
+	local title = Instance.new("TextLabel")
+	title.Size = UDim2.new(1, -16, 0, 28)
+	title.Position = UDim2.new(0, 8, 0, 8)
+	title.BackgroundTransparency = 1
+	title.Text = "Console"
+	title.Font = Enum.Font.Code
+	title.TextSize = 16
+	title.TextXAlignment = Left
+	title.TextColor3 = Color3.fromRGB(255,255,255)
+	title.Parent = main
+
+	local clearBtn = Instance.new("TextButton")
+	clearBtn.Size = UDim2.fromOffset(70, 22)
+	clearBtn.Position = UDim2.new(1, -78, 0, 10)
+	clearBtn.Text = "CLEAR"
+	clearBtn.Font = Enum.Font.Code
+	clearBtn.TextSize = 12
+	clearBtn.BackgroundColor3 = Color3.fromRGB(35,35,35)
+	clearBtn.TextColor3 = Color3.fromRGB(200,200,200)
+	clearBtn.Parent = main
+
+	local listFrame = Instance.new("ScrollingFrame")
+	listFrame.Size = UDim2.new(1, -16, 1, -56)
+	listFrame.Position = UDim2.new(0, 8, 0, 40)
+	listFrame.ScrollBarImageTransparency = 0.2
+	listFrame.BackgroundColor3 = Color3.fromRGB(10,10,10)
+	listFrame.BorderSizePixel = 0
+	listFrame.Parent = main
+
+	local listCorner = Instance.new("UICorner")
+	listCorner.CornerRadius = UDim.new(0, 8)
+	listCorner.Parent = listFrame
+
+	local layout = Instance.new("UIListLayout")
+	layout.Padding = UDim.new(0, 4)
+	layout.Parent = listFrame
+
+	local lines = {}
+
+	local function updateCanvas()
+		task.wait()
+		listFrame.CanvasSize = UDim2.fromOffset(0, layout.AbsoluteContentSize.Y + 8)
+		listFrame.CanvasPosition = Vector2.new(0, math.max(0, listFrame.CanvasSize.Y.Offset - listFrame.AbsoluteWindowSize.Y))
+	end
+
+	local function timestamp()
+		local t = os.date("*t")
+		return string.format("[%02d:%02d:%02d]", t.hour, t.min, t.sec)
+	end
+
+	local function addLine(text)
+		local label = Instance.new("TextLabel")
+		label.Size = UDim2.new(1, -8, 0, 18)
+		label.AutomaticSize = Enum.AutomaticSize.Y
+		label.BackgroundTransparency = 1
+		label.TextWrapped = true
+		label.TextXAlignment = Left
+		label.TextYAlignment = Top
+		label.Font = Enum.Font.Code
+		label.TextSize = 14
+		label.TextColor3 = Color3.fromRGB(220,220,220)
+		label.Text = text
+		label.Parent = listFrame
+
+		table.insert(lines, label)
+		if #lines > MAX_LINES then
+			local first = table.remove(lines, 1)
+			if first then first:Destroy() end
+		end
+
+		updateCanvas()
+	end
+
+	clearBtn.MouseButton1Click:Connect(function()
+		for _, l in ipairs(lines) do l:Destroy() end
+		table.clear(lines)
+		updateCanvas()
+	end)
+
+	return function(...)
+		local parts = {}
+		for i, v in ipairs({...}) do parts[i] = tostring(v) end
+		addLine(timestamp() .. " " .. table.concat(parts, " "))
+	end
+end
+
+local log = createConsole()
+log("Console iniciado")
+
+-- ==========================
+-- UTILS
+-- ==========================
+local function getCharacter()
+	return player.Character or player.CharacterAdded:Wait()
+end
+
+local function getHRP()
+	return getCharacter():WaitForChild("HumanoidRootPart")
+end
+
+local function encontrarMapa()
+	for _, thing in ipairs(Workspace:GetChildren()) do
+		if thing:FindFirstChild("Spawns") then
+			return thing
+		end
+	end
+	return nil
+end
+
+local function getNearestCoin(map, hrp)
+	if not map:FindFirstChild("CoinContainer") then return nil end
+
+	local nearest = nil
+	local shortest = math.huge
+
+	for _, coin in ipairs(map.CoinContainer:GetChildren()) do
+		if coin:IsA("BasePart") then
+			local dist = (coin.Position - hrp.Position).Magnitude
+			if dist < shortest then
+				shortest = dist
+				nearest = coin
+			end
+		end
+	end
+
+	return nearest
+end
+
+local function flyTo(position)
+	local hrp = getHRP()
+
+	while true do
+		local dt = RunService.Heartbeat:Wait()
+		local dir = position - hrp.Position
+		local dist = dir.Magnitude
+
+		if dist <= COIN_REACH_DIST then
+			hrp.CFrame = CFrame.new(position)
+			break
+		end
+
+		hrP = hrp
+		hrP.CFrame = hrP.CFrame + dir.Unit * MOVE_SPEED * dt
+	end
+end
+
+-- ==========================
+-- MAIN STATE LOOP
+-- ==========================
+local map = nil
+
+while true do
+	-- AGUARDANDO MAPA
+	while not map do
+		log("Aguardando mapa...")
+		task.wait(CHECK_MAP_DELAY)
+		map = encontrarMapa()
+	end
+
+	log("Mapa encontrado:", map.Name)
+
+	-- FARMANDO (sempre coin mais próxima)
+	while map and map.Parent do
+		local hrp = getHRP()
+		local coin = getNearestCoin(map, hrp)
+
+		if not coin then
+			log("Sem moedas, aguardando...")
+			task.wait(1)
+		else
+			log("Indo até coin mais próxima")
+			flyTo(coin.Position)
+			task.wait(0.2)
+		end
+	end
+
+	log("Mapa sumiu, parando farm")
+	map = nil
+end
+
+game:GetService("ReplicatedStorage").Remotes.Gameplay.GetCoin.OnClientEvent:Connect(function(algo)
+	addLine("coin coletado")
+	addLine(algo)
+end)
